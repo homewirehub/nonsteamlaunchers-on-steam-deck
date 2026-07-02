@@ -23,7 +23,7 @@ import socket
 import base64
 import http.client
 
-from datetime import datetime
+from datetime import datetime, timezone
 from base64 import b64encode
 
 import xml.etree.ElementTree as ET
@@ -760,6 +760,11 @@ def scan_and_track_games(logged_in_home, steamid3):
 
     shortcuts_path = f"{logged_in_home}/.steam/root/userdata/{steamid3}/config/shortcuts.vdf"
     installed_apps_path = f"{logged_in_home}/.config/systemd/user/installedapps.json"
+    # AUDIT M25: a game must be missing for this many consecutive countable
+    # scan cycles before it is treated as removed. The counter lives in its
+    # own file, NOT in env_vars (which has its own corruption issues, K5/M23).
+    removal_miss_threshold = 3
+    removal_counters_path = f"{logged_in_home}/.config/systemd/user/nsl_removal_counters.json"
 
     current_scan = {}
     master_list = {}
@@ -782,6 +787,42 @@ def scan_and_track_games(logged_in_home, steamid3):
         else:
             master_list = {}
             previous_master_list = {}
+
+    def load_removal_counters():
+        # AUDIT M25: a corrupt or missing counter file must never count as
+        # "threshold reached" - reset to 0 and recount. A missed removal is
+        # harmless, a wrong removal is not.
+        try:
+            with open(removal_counters_path, "r") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Expected dictionary.")
+            return {
+                launcher: {app: int(count) for app, count in apps.items()}
+                for launcher, apps in data.items() if isinstance(apps, dict)
+            }
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            print(f"Removal counter file unreadable ({e}); resetting all counters.")
+            return {}
+
+    def save_removal_counters(counters):
+        # Same atomic write pattern as write_shortcuts_to_file (AUDIT K1)
+        os.makedirs(os.path.dirname(removal_counters_path), exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix='.nsl_removal_counters.', dir=os.path.dirname(removal_counters_path))
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(counters, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, removal_counters_path)
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            raise
 
     def track_game(appname, launcher):
         now = datetime.utcnow().isoformat() + "Z"
@@ -829,26 +870,45 @@ def scan_and_track_games(logged_in_home, steamid3):
                 print(f"AppID not found for '{appname}'")
 
     def finalize_game_tracking():
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         removed_apps = {}
+        counters = load_removal_counters()
+        new_counters = {}
 
         for launcher in list(master_list.keys()):
-            if launcher not in current_scan:
-                removed_apps[launcher] = list(master_list[launcher].keys())
-                del master_list[launcher]
-            else:
-                for appname in list(master_list[launcher].keys()):
-                    if appname not in current_scan[launcher]:
-                        was_installed = previous_master_list.get(launcher, {}).get(appname, {}).get("still_installed", True)
-                        if was_installed:
-                            removed_apps.setdefault(launcher, []).append(appname)
-                        master_list[launcher][appname]["still_installed"] = False
-                        master_list[launcher][appname]["last_seen"] = now
+            # AUDIT M25: a launcher that is completely absent from this scan
+            # means its data source was unavailable (SD card not mounted yet,
+            # DB locked, scanner section failed) rather than every one of its
+            # games being uninstalled at once. Do not count this cycle for
+            # its games; carry the existing counters over unchanged.
+            if launcher not in current_scan or not current_scan[launcher]:
+                if launcher in counters:
+                    new_counters[launcher] = counters[launcher]
+                print(f"Launcher '{launcher}' yielded no scan data this cycle; skipping removal detection for it.")
+                continue
+
+            for appname in list(master_list[launcher].keys()):
+                if appname in current_scan[launcher]:
+                    continue  # still installed; any previous miss counter resets
+                if not master_list[launcher][appname].get("still_installed", True):
+                    continue  # already handled as removed in an earlier cycle
+                miss_count = counters.get(launcher, {}).get(appname, 0) + 1
+                if miss_count >= removal_miss_threshold:
+                    was_installed = previous_master_list.get(launcher, {}).get(appname, {}).get("still_installed", True)
+                    if was_installed:
+                        removed_apps.setdefault(launcher, []).append(appname)
+                    master_list[launcher][appname]["still_installed"] = False
+                    master_list[launcher][appname]["last_seen"] = now
+                else:
+                    new_counters.setdefault(launcher, {})[appname] = miss_count
+                    print(f"'{appname}' ({launcher}) missing for {miss_count}/{removal_miss_threshold} cycles; not removing yet.")
 
         for launcher, games in current_scan.items():
             if launcher not in master_list:
                 master_list[launcher] = {}
             master_list[launcher].update(games)
+
+        save_removal_counters(new_counters)
 
         # Remove volatile fields (like "last_seen") for comparison
         def cleaned(data):
@@ -6841,45 +6901,31 @@ if removed_apps:
 
         print(f"Looking for .desktop file for: {game_name}")
 
-        for game_name in removed_game_names:
-            base_game_name = game_name.split(' (')[0].strip()
+        # AUDIT M25: only delete a file that is exactly named
+        # "<game>.desktop" AND whose Desktop Entry Name matches the game
+        # exactly. NSL-managed files satisfy both; a foreign app that merely
+        # shares the display name (reverse-DNS filename) is left alone.
+        for directory in directories:
+            full_path = os.path.join(directory, desktop_filename)
 
-            found_file = False
-            print(f"Looking for .desktop file for: {game_name}")
+            if not os.path.isfile(full_path):
+                continue
 
-            for directory in directories:
-                try:
-                    files_in_directory = os.listdir(directory)
-                except Exception:
-                    continue
+            try:
+                config = configparser.ConfigParser(interpolation=None)
+                config.read(full_path)
+                desktop_name = config["Desktop Entry"].get("Name", "").strip() if "Desktop Entry" in config else ""
+            except Exception as e:
+                print(f"Failed reading {full_path}: {e}")
+                continue
 
-                for f in files_in_directory:
-                    if not f.endswith(".desktop"):
-                        continue
+            if desktop_name == base_game_name:
+                os.remove(full_path)
+                print(f"Deleted .desktop file for: {game_name} from {directory}")
+                found_file = True
+                break
+            else:
+                print(f"Skipping {full_path}: Desktop Entry Name '{desktop_name}' is not an exact match.")
 
-                    full_path = os.path.join(directory, f)
-
-                    try:
-                        config = configparser.ConfigParser(interpolation=None)
-                        config.read(full_path)
-
-                        if "Desktop Entry" not in config:
-                            continue
-
-                        desktop_name = config["Desktop Entry"].get("Name", "").strip()
-
-                        if desktop_name == base_game_name:
-                            os.remove(full_path)
-                            print(f"Deleted .desktop file for: {game_name} from {directory}")
-                            found_file = True
-                            break
-
-                    except Exception as e:
-                        print(f"Failed reading {full_path}: {e}")
-                        continue
-
-                if found_file:
-                    break
-
-            if not found_file:
-                print(f"No .desktop file found for: {game_name}")
+        if not found_file:
+            print(f"No .desktop file found for: {game_name}")
