@@ -1,7 +1,10 @@
 [Desktop Entry]
 Comment[en_US]=
 Comment=
-Exec=/bin/bash -c 'export logged_in_home=$(eval echo "~$(whoami)"); curl -Ls https://raw.githubusercontent.com/moraroy/NonSteamLaunchers-On-Steam-Deck/refs/heads/main/NSLPluginInstaller.sh | nohup /bin/bash'
+# Dev fork (AUDIT K13): runs the locally checked-out script instead of piping
+# upstream main from raw.githubusercontent.com into bash. Assumes the repo is
+# checked out at ~/NonSteamLaunchers-On-Steam-Deck.
+Exec=/bin/bash -c 'export logged_in_home=$(eval echo "~$(whoami)"); nohup /bin/bash "$logged_in_home/NonSteamLaunchers-On-Steam-Deck/NSLPluginInstaller.sh"'
 GenericName[en_US]=
 GenericName=
 Icon=uav
