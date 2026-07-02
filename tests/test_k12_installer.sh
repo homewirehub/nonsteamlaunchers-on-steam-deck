@@ -58,10 +58,17 @@ cat > "$SANDBOX/bin/qdbus" <<'EOF'
 exit 0
 EOF
 cp "$SANDBOX/bin/qdbus" "$SANDBOX/bin/systemctl"
+cat > "$SANDBOX/bin/touch" <<'EOF'
+#!/bin/bash
+# Stub: log the invocation (Decky hot-reload check), then really touch.
+echo "touch $*" >> "$TOUCH_LOG"
+exec /usr/bin/touch "$@"
+EOF
 chmod +x "$SANDBOX/bin/"*
 
 run_installer() {
-  ZENITY_LOG="$SANDBOX/zenity.log" PATH="$SANDBOX/bin:$PATH" bash "$SANDBOX/installer.sh" \
+  ZENITY_LOG="$SANDBOX/zenity.log" TOUCH_LOG="$SANDBOX/touch.log" \
+    PATH="$SANDBOX/bin:$PATH" bash "$SANDBOX/installer.sh" \
     > "$SANDBOX/run.log" 2>&1
   echo $?
 }
@@ -100,6 +107,7 @@ check "a: fails BEFORE sudo password prompt" "$([ $? -ne 0 ]; echo $?)"
 echo "--- (b) valid checkout, fresh install ---"
 make_checkout
 : > "$SANDBOX/zenity.log"
+: > "$SANDBOX/touch.log"
 rc=$(run_installer)
 check "b: exit code 0" "$([ "$rc" -eq 0 ]; echo $?)"
 [ -f "$PLUGIN/main.py" ] && [ -f "$PLUGIN/dist/index.js" ] && [ -f "$PLUGIN/plugin.json" ]
@@ -112,10 +120,13 @@ ls -d "$PLUGIN".new.* "$PLUGIN".old.* 2>/dev/null
 check "b: no .new/.old leftovers" "$([ $? -ne 0 ]; echo $?)"
 ls /tmp/NSLDeckyStaging.* 2>/dev/null
 check "b: staging dir cleaned up (trap)" "$([ $? -ne 0 ]; echo $?)"
+grep -q "touch $PLUGIN/main.py $PLUGIN/dist/index.js" "$SANDBOX/touch.log"
+check "b: Decky hot-reload touch on installed main.py + dist/index.js" $?
 
 # =========================================================================
 echo "--- (c) rerun unchanged -> up-to-date, no reinstall ---"
 : > "$SANDBOX/zenity.log"
+: > "$SANDBOX/touch.log"
 inode_before=$(stat -c %i "$PLUGIN/main.py")
 rc=$(run_installer)
 check "c: exit code 0" "$([ "$rc" -eq 0 ]; echo $?)"
@@ -124,11 +135,14 @@ check "c: 'No update needed' message" $?
 inode_after=$(stat -c %i "$PLUGIN/main.py")
 [ "$inode_before" = "$inode_after" ]
 check "c: installed files untouched (same inode)" $?
+[ ! -s "$SANDBOX/touch.log" ]
+check "c: no hot-reload touch when up-to-date" $?
 
 # =========================================================================
 echo "--- (d) source edited -> reinstall picks up change ---"
 echo 'print("plugin v2")' > "$SRC/main.py"
 : > "$SANDBOX/zenity.log"
+: > "$SANDBOX/touch.log"
 rc=$(run_installer)
 check "d: exit code 0" "$([ "$rc" -eq 0 ]; echo $?)"
 grep -q 'plugin v2' "$PLUGIN/main.py"
@@ -137,6 +151,8 @@ grep -q "Updating from 1.2.3 to 1.2.3" "$SANDBOX/zenity.log"
 check "d: update ran despite equal versions (content diff)" $?
 ls -d "$PLUGIN".new.* "$PLUGIN".old.* 2>/dev/null
 check "d: no .new/.old leftovers" "$([ $? -ne 0 ]; echo $?)"
+grep -q "touch $PLUGIN/main.py $PLUGIN/dist/index.js" "$SANDBOX/touch.log"
+check "d: Decky hot-reload touch after update swap" $?
 
 # =========================================================================
 echo "--- (e) incomplete checkout -> error, installed plugin untouched ---"
