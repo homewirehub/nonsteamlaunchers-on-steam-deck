@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# TODO (AUDIT K12 leftover): no lockfile against parallel starts - two
+# concurrent installer runs could interleave while swapping the plugin.
+# The $$-suffixed staging directories defuse most of it; the proper fix
+# is a flock around the update block.
+
 # ENVIRONMENT VARIABLES
 logged_in_user=$(logname 2>/dev/null || whoami)
 logged_in_home=$(eval echo "~${logged_in_user}")
