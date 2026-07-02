@@ -331,15 +331,23 @@ fi
 
 ### NSL Game Scanner.py Update/Scan
 update_nsl_game_scanner() {
-    repo_url='https://github.com/moraroy/NonSteamLaunchers-On-Steam-Deck/archive/refs/heads/main.zip'
+    # Dev fork (AUDIT M9): deploy the scanner and vendored modules from this
+    # checkout instead of re-downloading moraroy/main, which overwrote any
+    # local scanner changes on every run. Requires running the checked-out
+    # script (see .desktop files) so BASH_SOURCE resolves to the repo.
+    local_repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     folders_to_clone=('urllib3' 'vdf' 'charset_normalizer')
 
     parent_folder="${logged_in_home}/.config/systemd/user/Modules"
     python_script_path="${logged_in_home}/.config/systemd/user/NSLGameScanner.py"
-    github_link="https://raw.githubusercontent.com/moraroy/NonSteamLaunchers-On-Steam-Deck/main/NSLGameScanner.py"
     env_vars="${logged_in_home}/.config/systemd/user/env_vars"
     steam_debug_file="${logged_in_home}/.local/share/Steam/.cef-enable-remote-debugging"
     nsl_config_dir="${logged_in_home}/.var/app/com.github.mtkennerly.ludusavi/config/ludusavi/NSLconfig"
+
+    if [ ! -f "${local_repo_dir}/NSLGameScanner.py" ]; then
+        echo "ERROR: NSLGameScanner.py not found in ${local_repo_dir} - run the checked-out NonSteamLaunchers.sh from the repo."
+        return 1
+    fi
 
     # Stop and disable the service if it exists
     if systemctl --user list-unit-files | grep -q "nslgamescanner.service"; then
@@ -350,42 +358,21 @@ update_nsl_game_scanner() {
         systemctl --user disable nslgamescanner.service 2>/dev/null || true
     fi
 
-    # Remove the old python script if it exists
-    rm -f "$python_script_path"
-
     # Create the parent folder if it doesn't exist
     mkdir -p "${parent_folder}"
 
-    folders_exist=true
+    # Copy missing vendored modules from the local checkout
     for folder in "${folders_to_clone[@]}"; do
-        if [ ! -d "${parent_folder}/${folder}" ]; then
-            folders_exist=false
-            break
+        destination_path="${parent_folder}/${folder}"
+        source_path="${local_repo_dir}/Modules/${folder}"
+        if [ ! -d "${destination_path}" ] && [ -d "${source_path}" ]; then
+            cp -a "${source_path}" "${destination_path}" || { echo "Copy failed for ${folder}"; return 1; }
         fi
     done
 
-    # Download and unzip the repo if necessary
-    if [ "${folders_exist}" = false ]; then
-        zip_file_path="${parent_folder}/repo.zip"
-
-        wget -O "${zip_file_path}" "${repo_url}" || { echo 'Download failed'; exit 1; }
-
-        unzip -d "${parent_folder}" "${zip_file_path}" || { echo 'Unzip failed'; exit 1; }
-
-        for folder in "${folders_to_clone[@]}"; do
-            destination_path="${parent_folder}/${folder}"
-            source_path="${parent_folder}/NonSteamLaunchers-On-Steam-Deck-main/Modules/${folder}"
-            if [ -d "${source_path}" ]; then
-                mv "${source_path}" "${destination_path}" || { echo "Move failed for ${folder}"; exit 1; }
-            fi
-        done
-
-        rm -f "${zip_file_path}"
-        rm -rf "${parent_folder}/NonSteamLaunchers-On-Steam-Deck-main"
-    fi
-
-    # Download the latest Python script
-    curl -fsSL -o "$python_script_path" "$github_link"
+    # Deploy the scanner from the local checkout; cp overwrites in place, so
+    # a failed copy leaves the previously deployed scanner intact
+    cp "${local_repo_dir}/NSLGameScanner.py" "$python_script_path" || { echo 'Scanner deploy failed'; return 1; }
     chmod +x "$python_script_path"
 }
 
@@ -2415,15 +2402,23 @@ function stop_service {
 }
 
 update_nsl_game_scanner() {
-    repo_url='https://github.com/moraroy/NonSteamLaunchers-On-Steam-Deck/archive/refs/heads/main.zip'
+    # Dev fork (AUDIT M9): deploy the scanner and vendored modules from this
+    # checkout instead of re-downloading moraroy/main, which overwrote any
+    # local scanner changes on every run. Requires running the checked-out
+    # script (see .desktop files) so BASH_SOURCE resolves to the repo.
+    local_repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     folders_to_clone=('requests' 'urllib3' 'steamgrid' 'vdf' 'charset_normalizer')
 
     parent_folder="${logged_in_home}/.config/systemd/user/Modules"
     python_script_path="${logged_in_home}/.config/systemd/user/NSLGameScanner.py"
-    github_link="https://raw.githubusercontent.com/moraroy/NonSteamLaunchers-On-Steam-Deck/main/NSLGameScanner.py"
     env_vars="${logged_in_home}/.config/systemd/user/env_vars"
     steam_debug_file="${logged_in_home}/.local/share/Steam/.cef-enable-remote-debugging"
     nsl_config_dir="${logged_in_home}/.var/app/com.github.mtkennerly.ludusavi/config/ludusavi/NSLconfig"
+
+    if [ ! -f "${local_repo_dir}/NSLGameScanner.py" ]; then
+        echo "ERROR: NSLGameScanner.py not found in ${local_repo_dir} - run the checked-out NonSteamLaunchers.sh from the repo."
+        return 1
+    fi
 
     # Stop and disable the service if it exists
     if systemctl --user list-unit-files | grep -q "nslgamescanner.service"; then
@@ -2434,42 +2429,21 @@ update_nsl_game_scanner() {
         systemctl --user disable nslgamescanner.service 2>/dev/null || true
     fi
 
-    # Remove the old python script if it exists
-    rm -f "$python_script_path"
-
     # Create the parent folder if it doesn't exist
     mkdir -p "${parent_folder}"
 
-    folders_exist=true
+    # Copy missing vendored modules from the local checkout
     for folder in "${folders_to_clone[@]}"; do
-        if [ ! -d "${parent_folder}/${folder}" ]; then
-            folders_exist=false
-            break
+        destination_path="${parent_folder}/${folder}"
+        source_path="${local_repo_dir}/Modules/${folder}"
+        if [ ! -d "${destination_path}" ] && [ -d "${source_path}" ]; then
+            cp -a "${source_path}" "${destination_path}" || { echo "Copy failed for ${folder}"; return 1; }
         fi
     done
 
-    # Download and unzip the repo if necessary
-    if [ "${folders_exist}" = false ]; then
-        zip_file_path="${parent_folder}/repo.zip"
-
-        wget -O "${zip_file_path}" "${repo_url}" || { echo 'Download failed'; exit 1; }
-
-        unzip -d "${parent_folder}" "${zip_file_path}" || { echo 'Unzip failed'; exit 1; }
-
-        for folder in "${folders_to_clone[@]}"; do
-            destination_path="${parent_folder}/${folder}"
-            source_path="${parent_folder}/NonSteamLaunchers-On-Steam-Deck-main/Modules/${folder}"
-            if [ -d "${source_path}" ]; then
-                mv "${source_path}" "${destination_path}" || { echo "Move failed for ${folder}"; exit 1; }
-            fi
-        done
-
-        rm -f "${zip_file_path}"
-        rm -rf "${parent_folder}/NonSteamLaunchers-On-Steam-Deck-main"
-    fi
-
-    # Download the latest Python script
-    curl -fsSL -o "$python_script_path" "$github_link"
+    # Deploy the scanner from the local checkout; cp overwrites in place, so
+    # a failed copy leaves the previously deployed scanner intact
+    cp "${local_repo_dir}/NSLGameScanner.py" "$python_script_path" || { echo 'Scanner deploy failed'; return 1; }
     chmod +x "$python_script_path"
     python3 "$python_script_path"
 }
