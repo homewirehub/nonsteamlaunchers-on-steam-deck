@@ -10,6 +10,7 @@ import zipfile
 import time
 import sys
 import subprocess
+import tempfile
 import sqlite3
 import csv
 import configparser
@@ -263,33 +264,54 @@ logo64 = ""
 hero64 = ""
 
 
-def create_empty_shortcuts():
-    return {'shortcuts': {}}
+def backup_shortcuts_file(shortcuts_file, max_backups=5):
+    # AUDIT K1: rotating backup next to shortcuts.vdf before any write
+    if not os.path.exists(shortcuts_file):
+        return
+    timestamp = time.strftime('%Y%m%d-%H%M%S')
+    shutil.copy2(shortcuts_file, f"{shortcuts_file}.bak-{timestamp}")
+    backup_dir = os.path.dirname(shortcuts_file)
+    prefix = os.path.basename(shortcuts_file) + '.bak-'
+    backups = sorted(f for f in os.listdir(backup_dir) if f.startswith(prefix))
+    for old_backup in backups[:-max_backups]:
+        os.remove(os.path.join(backup_dir, old_backup))
 
 def write_shortcuts_to_file(shortcuts_file, shortcuts):
-    with open(shortcuts_file, 'wb') as file:
-        file.write(vdf.binary_dumps(shortcuts))
-    os.chmod(shortcuts_file, 0o755)
+    # AUDIT K1: back up first, then write atomically (tempfile in the target
+    # directory + fsync + os.replace) so a crash mid-write can never leave a
+    # truncated or corrupted shortcuts.vdf.
+    backup_shortcuts_file(shortcuts_file)
+    fd, temp_path = tempfile.mkstemp(prefix='.shortcuts.vdf.', dir=os.path.dirname(shortcuts_file))
+    try:
+        with os.fdopen(fd, 'wb') as file:
+            file.write(vdf.binary_dumps(shortcuts))
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temp_path, 0o755)
+        os.replace(temp_path, shortcuts_file)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
 
 # Define the path to the shortcuts file
 shortcuts_file = f"{logged_in_home}/.steam/root/userdata/{steamid3}/config/shortcuts.vdf"
 
 # Check if the file exists
 if os.path.exists(shortcuts_file):
-    # If the file is not executable, write the shortcuts dictionary and make it executable
-    if not os.access(shortcuts_file, os.X_OK):
-        print("The file is not executable. Writing an empty shortcuts dictionary and making it executable.")
-        shortcuts = create_empty_shortcuts()
-        write_shortcuts_to_file(shortcuts_file, shortcuts)
-    else:
-        # Load the existing shortcuts
+    # AUDIT K1: an existing shortcuts.vdf is never replaced with an empty
+    # dict (the old exec-bit heuristic wiped all user shortcuts as soon as
+    # the file lost its executable bit, e.g. through a backup/restore). If
+    # the file cannot be read or parsed, abort instead of overwriting.
+    try:
         with open(shortcuts_file, 'rb') as file:
-            try:
-                shortcuts = vdf.binary_loads(file.read())
-            except vdf.VDFError as e:
-                print(f"Error reading file: {e}. The file might be corrupted or unreadable.")
-                print("Exiting the program. Please check the shortcuts.vdf file.")
-                sys.exit(1)
+            shortcuts = vdf.binary_loads(file.read())
+    except Exception as e:
+        print(f"Error reading {shortcuts_file}: {e}. The file might be corrupted or unreadable.")
+        print("Refusing to touch it. Please check or restore the file (see .bak-* backups next to it).")
+        sys.exit(1)
 else:
     print("The shortcuts.vdf file does not exist.")
     sys.exit(1)
