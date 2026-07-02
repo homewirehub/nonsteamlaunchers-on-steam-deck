@@ -588,16 +588,17 @@ function CheckInstallationDirectory {
 
 
 #Get SD Card Path
+# Prints the SD card mountpoint, or returns 1 if no card is mounted.
+# Only mountpoints under /run/media/ count: 64GB LCD Decks use internal
+# eMMC storage that also matches mmcblk*, but is mounted at / and /home.
+# No UI here - callers decide how to handle a missing card.
 get_sd_path() {
     local sd_mount
 
     sd_mount=$(lsblk -nr -o NAME,MOUNTPOINT \
-        | awk '$1 ~ /^mmcblk.*p[0-9]+$/ && $2 != "" { print $2; exit }')
+        | awk '$1 ~ /^mmcblk.*p[0-9]+$/ && $2 ~ /^\/run\/media\// { print $2; exit }')
 
-    if [[ -z "$sd_mount" ]]; then
-        zenity --error --text="No SD card detected. Please insert and mount an SD card."
-        exit 1
-    fi
+    [[ -n "$sd_mount" ]] || return 1
 
     echo "$sd_mount"
 }
@@ -1227,7 +1228,10 @@ echo "Options: $options"
 
 # Define the StartFreshFunction
 StartFreshFunction() {
-    sd_path=$(get_sd_path)
+    # SD card is optional for Start Fresh: without one we simply skip the
+    # SD cleanup step instead of blocking on an error dialog (invisible in
+    # Game Mode) or wiping "/<folder>" paths via an empty sd_path.
+    sd_path=$(get_sd_path) || sd_path=""
 
     compatdata_dir="${logged_in_home}/.local/share/Steam/steamapps/compatdata"
     other_dir="${logged_in_home}/.local/share/Steam/steamapps/shadercache"
@@ -1309,10 +1313,14 @@ StartFreshFunction() {
         [ -d "$folder_path" ] && [ -z "$(ls -A "$folder_path")" ] && rmdir "$folder_path" && echo "Deleted empty folder: $(basename "$folder_path")"
     done
 
-    echo "Removing SD card folders..."
-    for folder in "${folder_names[@]}"; do
-        delete_path "${sd_path}/${folder}"
-    done
+    if [[ -n "$sd_path" ]]; then
+        echo "Removing SD card folders..."
+        for folder in "${folder_names[@]}"; do
+            delete_path "${sd_path}/${folder}"
+        done
+    else
+        echo "No SD card detected - skipping SD card cleanup."
+    fi
 
     clean_envars_file
 
@@ -2267,7 +2275,15 @@ move_launcher_to_sd() {
     local launcher_name=$1
     local compat_dir="${logged_in_home}/.local/share/Steam/steamapps/compatdata"
     local sd_path
-    sd_path=$(get_sd_path) || return 1
+    sd_path=$(get_sd_path) || {
+        echo "ERROR: No SD card detected. Please insert and mount an SD card." >&2
+        # Dialog only in interactive mode, and never without a timeout:
+        # in Game Mode zenity windows are invisible and would block forever.
+        [ ${#args[@]} -eq 0 ] && zenity --error \
+            --text="No SD card detected. Please insert and mount an SD card." \
+            --width=300 --height=100 --timeout=15
+        return 1
+    }
 
     local launcher_link="${compat_dir}/${launcher_name}"
 
