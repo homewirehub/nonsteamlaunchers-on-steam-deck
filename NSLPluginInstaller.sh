@@ -175,6 +175,14 @@ else
   fi
 
   echo "$password" | sudo -S rm -rf "$old_dir"
+
+  # Decky's file watcher only reloads a plugin on created/modified events for
+  # main.py or dist/index.js; the staged directory rename above emits neither,
+  # so the swapped-in plugin would stay invisible to Decky until the next
+  # plugin_loader restart. Touch both watched files in the final location to
+  # trigger the hot reload.
+  touch "$LOCAL_DIR/main.py" "$LOCAL_DIR/dist/index.js" || \
+    echo "WARNING: could not touch plugin files for Decky hot reload; restart the plugin_loader service to load the plugin."
 fi
 
 set -x
