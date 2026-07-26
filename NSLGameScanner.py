@@ -484,7 +484,7 @@ steam_applist_cache = None
 
 
 def get_steam_store_appid(steam_store_game_name):
-    search_url = f"{BASE_URL}/search/{steam_store_game_name}"
+    search_url = f"{BASE_URL}/search/{urllib.parse.quote(steam_store_game_name)}"
     try:
         with urllib.request.urlopen(search_url) as response:
             data = json.load(response)
@@ -496,7 +496,6 @@ def get_steam_store_appid(steam_store_game_name):
     except (urllib.error.URLError, Exception) as e:
         print(f"Primary store App ID lookup failed for {steam_store_game_name}: {e}")
 
-    # Fallback using Steam AppList (cached)
     global steam_applist_cache
     if steam_applist_cache is None:
         steam_applist_cache = {}
@@ -504,25 +503,47 @@ def get_steam_store_appid(steam_store_game_name):
     def normalize_name(name):
         name = name.lower()
         name = re.sub(r'[®™]', '', name)
+        name = re.sub(r'[-–—:]', ' ', name)
         name = ' '.join(name.split())
         return name
 
     if steam_store_game_name not in steam_applist_cache:
-        time.sleep(0.5)  # Small delay to avoid spamming Steam
+        time.sleep(0.5) 
+
         query = urllib.parse.quote(steam_store_game_name)
         url = f"https://store.steampowered.com/api/storesearch/?term={query}&l=english&cc=US"
+
         try:
             with urllib.request.urlopen(url, timeout=10) as response:
                 data = json.load(response)
+
+            if not data.get("items"):
+                relaxed_name = steam_store_game_name.replace(" - ", " ")
+                relaxed_query = urllib.parse.quote(relaxed_name)
+                relaxed_url = f"https://store.steampowered.com/api/storesearch/?term={relaxed_query}&l=english&cc=US"
+
+                print(f"No exact Steam results. Trying relaxed search: {relaxed_name}")
+
+                with urllib.request.urlopen(relaxed_url, timeout=10) as response:
+                    data = json.load(response)
+
         except (urllib.error.URLError, Exception) as e:
             print(f"Fallback Steam lookup failed for {steam_store_game_name}: {e}")
             return None
 
         target = normalize_name(steam_store_game_name)
         fallback_appid = None
+
         for item in data.get("items", []):
-            if normalize_name(item.get("name", "")) == target:
+            item_name = normalize_name(item.get("name", ""))
+
+            if item_name == target:
                 fallback_appid = str(item.get("id"))
+                break
+
+            if target in item_name or item_name in target:
+                fallback_appid = str(item.get("id"))
+                print(f"Using partial Steam match: {item.get('name')} ({fallback_appid})")
                 break
 
         steam_applist_cache[steam_store_game_name] = fallback_appid
@@ -1669,6 +1690,10 @@ if (window.__REAL_PLAYTIME_LOADED__) {
 
 
 THEMEMUSIC_CODE = r"""(function () {
+    if (window.__THEMEMUSIC_LOADED__) {
+        return;
+    }
+    window.__THEMEMUSIC_LOADED__ = true;
     const LOCAL_STORAGE_KEY = "ThemeMusicData";
 
     const themeMusicEvents = new EventTarget();
@@ -1742,12 +1767,9 @@ THEMEMUSIC_CODE = r"""(function () {
         sessionCache.set(query, entry);
     }
 
-    if (!window.__MY_THEMEMUSIC_SCRIPT_LOADED__) {
-        Object.defineProperty(window, "__MY_THEMEMUSIC_SCRIPT_LOADED__", { value: true });
-        const tag = document.createElement('script');
-        tag.src = "https://www.youtube.com/iframe_api";
-        document.head.appendChild(tag);
-    }
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
 
     function waitForYouTubeAPI() {
         if (window.YT && window.YT.Player) return Promise.resolve();
@@ -2870,11 +2892,14 @@ METADATA_CODE = r"""
                 "Battle.net": "https://cdn2.steamgriddb.com/icon/739465804a0e17d2a47c9bc9c805d60a/32/96x96.png",
                 "Legacy Games": "https://cdn2.steamgriddb.com/icon_thumb/5225802cb9758f9fcd34a679bf9326ec.png",
                 "VK Play": "https://cdn2.steamgriddb.com/icon_thumb/5d35998237b55b8778a75732afc080aa.png",
-                "HoyoPlay": "https://cdn2.steamgriddb.com/icon/817fccd834f01fb5e1770c8679c0824e/32/256x256.png",
+                "HoYoPlay": "https://cdn2.steamgriddb.com/icon/817fccd834f01fb5e1770c8679c0824e/32/256x256.png",
                 "Game Jolt Client": "https://cdn2.steamgriddb.com/icon_thumb/17df67628bb89193838f83015a3e7d30.png",
                 "Minecraft Launcher": "https://cdn2.steamgriddb.com/icon/0678c572b0d5597d2d4a6b5bd135754c/32/96x96.png",
                 "Humble Games Collection": "https://cdn2.steamgriddb.com/icon_thumb/3126ed973cbecde2bbffe419f139f456.png",
                 "NVIDIA GeForce NOW": "https://cdn2.steamgriddb.com/icon_thumb/f91ee142269ec908c23e1cd87286e254.png",
+                "Amazon Luna": "https://cdn2.steamgriddb.com/icon/408cebdf5e2849adedc881583586e74d/32/256x256.png",
+                "Xbox Game Pass": "https://cdn2.steamgriddb.com/icon_thumb/ecc6d2386883febda6306bb70216c846.png",
+                "Boosteroid Cloud Gaming": "https://cdn2.steamgriddb.com/icon_thumb/e3998932e2e851de8a24b733628c29de.png",
                 "Waydroid": "https://cdn2.steamgriddb.com/icon_thumb/d6de4f0418bf4015017f5c65cdecc46e.png",
                 "Google Chrome": "https://cdn2.steamgriddb.com/icon/3941c4358616274ac2436eacf67fae05/32/256x256.png",
                 "Brave": "https://cdn2.steamgriddb.com/icon_thumb/192d80a88b27b3e4115e1a45a782fe1b.png",
@@ -2905,6 +2930,9 @@ METADATA_CODE = r"""
                     "Nintendo Wii": ["Wii", "NintendoWii", "RVL"],
                     "Nintendo Wii U": ["WiiU", "NintendoWiiU", "Wii U", "Cafe"],
                     "Nintendo Switch": ["Switch", "NintendoSwitch", "NS", "NSW", "HAC"],
+                    "NVIDIA GeForce NOW": ["GeForce NOW", "Geforce Now"],
+                    "Xbox Game Pass": ["Xbox Game Streaming", "Xbox", "Xbox Cloud Gaming", "Microsoft Xbox"],
+                    "Boosteroid Cloud Gaming": ["Boosteroid"],
                     // add more groups here
                 };
 
@@ -5324,7 +5352,7 @@ else:
 flavor_mapping = {
     "RTRO": "Blizzard Arcade Collection",
     "D1": "Diablo",
-    "OSI": "Diablo II Resurrected",
+    "OSI": "Diablo II: Resurrected",
     "D3": "Diablo III",
     "Fen": "Diablo IV",
     "ANBS": "Diablo Immortal (PC)",
@@ -5440,7 +5468,17 @@ if game_dict:
         elif game_key in ("seaofthieves", "sot", "scor"):
             game_key = "SCOR"
 
+
         game_name = flavor_mapping.get(game_key)
+
+        if not game_name:
+            game_name = flavor_mapping.get(game_key.upper())
+
+        if not game_name:
+            game_name = flavor_mapping.get(game_key.lower())
+
+        if not game_name:
+            game_name = flavor_mapping.get(game_key.title())
 
         if not game_name:
             print(f"Unknown game mapping: {game_key}, skipping")
@@ -6116,6 +6154,7 @@ geforce_now_urls = []
 xbox_urls = []
 luna_urls = []
 boosteroid_urls = []
+webrcade_urls = []
 seen_urls = set()
 
 def process_bookmark_item(item):
@@ -6181,6 +6220,17 @@ def process_bookmark_item(item):
             seen_urls.add(url)
 
 
+        # WebRcade
+        elif "play.webrcade.com/app/" in url:
+            if not name or url in seen_urls:
+                return
+
+            game_name = name.strip()
+
+            webrcade_urls.append(("WebRcade", game_name, url))
+            seen_urls.add(url)
+
+
 
 def scan_children(children):
     for item in children:
@@ -6201,18 +6251,17 @@ else:
     scan_children(data['roots']['synced'].get('children', []))
 
     # Merge all platforms' URLs into a single list for processing
-    all_urls = geforce_now_urls + xbox_urls + luna_urls + boosteroid_urls
+    all_urls = geforce_now_urls + xbox_urls + luna_urls + boosteroid_urls + webrcade_urls
 
     for platform_name, game_name, url in all_urls:
         print(f"{platform_name}: {game_name} - {url}")
 
-        # Encode URL to prevent issues with special characters
-        encoded_url = quote(url, safe=":/?=&")
+        encoded_url = url
 
         chromelaunch_options = (
             f'run --branch=stable --arch=x86_64 --command=/app/bin/chrome --file-forwarding com.google.Chrome @@u @@ '
             f'--window-size=1280,800 --force-device-scale-factor=1.00 --device-scale-factor=1.00 '
-            f'--start-fullscreen {encoded_url} --no-first-run --enable-features=OverlayScrollbar'
+            f'--start-fullscreen "{encoded_url}" --no-first-run --enable-features=OverlayScrollbar'
         )
 
         chromedirectory = os.environ.get("chromedirectory", "/usr/bin/flatpak")
@@ -6224,11 +6273,12 @@ else:
             game_name,
             chromelaunch_options,
             chrome_startdir,
-            launcher_name="Google Chrome"
+            launcher_name=platform_name
         )
         track_game(game_name, "Google Chrome")
 
 # end of chrome scanner for xbox, geforce now, and amazon luna, boosteroid bookmarks
+
 
 
 
@@ -6683,6 +6733,65 @@ else:
 
 # End of Gryphlink Game Scanner
 
+
+# Rockstar Games Launcher Scanner
+rockstar_launcher_id = os.environ.get('rockstar_launcher', '')
+rockstar_sys_reg = f"{logged_in_home}/.local/share/Steam/steamapps/compatdata/{rockstar_launcher_id}/pfx/system.reg"
+
+if not rockstar_launcher_id or not os.path.exists(rockstar_sys_reg):
+    print("Rockstar Games Launcher data not found. Skipping Rockstar Games Scanner.")
+else:
+    rockstar_games = {}
+    current_game = None
+
+    with open(rockstar_sys_reg, 'r') as f:
+        for line in f:
+            section_match = re.search(r'\[Software\\\\Wow6432Node\\\\Rockstar Games\\\\([^\\]+)\]', line)
+            if section_match:
+                game_title = section_match.group(1)
+                if game_title in ("Launcher", "Rockstar Games Social Club"):
+                    current_game = None
+                else:
+                    current_game = game_title
+                continue
+
+            if current_game and '"InstallFolder"' in line:
+                folder_match = re.search(r'"InstallFolder"="(.+)"', line)
+                if folder_match:
+                    install_folder = folder_match.group(1)
+                    linux_path = install_folder.replace(
+                        "C:\\\\",
+                        f"{logged_in_home}/.local/share/Steam/steamapps/compatdata/{rockstar_launcher_id}/pfx/drive_c/"
+                    ).replace("\\\\", "/")
+                    if os.path.exists(linux_path):
+                        if current_game not in rockstar_games:
+                            rockstar_games[current_game] = linux_path
+                    else:
+                        print(f"Rockstar game '{current_game}' found in registry but install path not in launcher prefix: {linux_path}")
+
+    if not rockstar_games:
+        print("No Rockstar games found in registry. Skipping Rockstar Games Scanner.")
+    else:
+        compat_path = f"{logged_in_home}/.local/share/Steam/steamapps/compatdata/{rockstar_launcher_id}/"
+
+        for game_name, install_path in rockstar_games.items():
+            game_exe = None
+            if os.path.isdir(install_path):
+                exe_candidates = [f for f in os.listdir(install_path) if f.lower().endswith('.exe') and 'uninstall' not in f.lower()]
+                game_word = game_name.split()[-1].lower()
+                game_exe = next((e for e in exe_candidates if game_word in e.lower()), exe_candidates[0] if exe_candidates else None)
+
+            if game_exe:
+                exe_path = f'"{os.path.join(install_path, game_exe)}"'
+                dir_path = f'"{install_path}"'
+                launch_options = f'STEAM_COMPAT_DATA_PATH="{compat_path}" %command%'
+                create_new_entry(exe_path, game_name, launch_options, dir_path, launcher_name="Rockstar Games Launcher")
+                track_game(game_name, "Rockstar Games Launcher")
+                print(f"Added Rockstar game: {game_name}")
+            else:
+                print(f"Could not find game executable for {game_name} in {install_path}")
+
+# End of Rockstar Games Scanner
 
 
 # Call finalize_tracking and capture removed apps
