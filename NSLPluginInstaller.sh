@@ -9,14 +9,12 @@
 logged_in_user=$(logname 2>/dev/null || whoami)
 logged_in_home=$(eval echo "~${logged_in_user}")
 
-# Function to prompt for sudo password
+# Function to prompt for sudo using sudo's normal credential handling, instead of
+# capturing the password with zenity and piping it into `sudo -S` (which exposes it
+# via the environment/argv and process listings).
 prompt_for_sudo() {
-  password=$(zenity --password --title="Authentication Required" --text="Please enter your password to proceed with installation/update.")
-
-  # Validate password
-  echo "$password" | sudo -S -v >/dev/null 2>&1
-  if [ $? -ne 0 ]; then
-    zenity --error --text="Incorrect password or sudo failed. Exiting."
+  if ! sudo -v; then
+    zenity --error --text="Sudo authentication failed. Exiting."
     exit 1
   fi
 }
@@ -145,36 +143,36 @@ else
 
   new_dir="${LOCAL_DIR}.new.$$"
   old_dir="${LOCAL_DIR}.old.$$"
-  echo "$password" | sudo -S rm -rf "$new_dir" "$old_dir"
+  sudo rm -rf "$new_dir" "$old_dir"
 
-  if ! echo "$password" | sudo -S cp -r "$staging_dir" "$new_dir"; then
-    echo "$password" | sudo -S rm -rf "$new_dir"
+  if ! sudo cp -r "$staging_dir" "$new_dir"; then
+    sudo rm -rf "$new_dir"
     echo "ERROR: preparing the new plugin copy failed."
     zenity --error --text="Preparing the new plugin copy failed.\n\nThe installed plugin was left untouched."
     exit 1
   fi
-  echo "$password" | sudo -S chmod -R u+rw "$new_dir"
-  echo "$password" | sudo -S chown -R "$logged_in_user:$logged_in_user" "$new_dir"
+  sudo chmod -R u+rw "$new_dir"
+  sudo chown -R "$logged_in_user:$logged_in_user" "$new_dir"
 
   if [ -d "$LOCAL_DIR" ]; then
-    if ! echo "$password" | sudo -S mv "$LOCAL_DIR" "$old_dir"; then
-      echo "$password" | sudo -S rm -rf "$new_dir"
+    if ! sudo mv "$LOCAL_DIR" "$old_dir"; then
+      sudo rm -rf "$new_dir"
       echo "ERROR: could not move the old plugin aside; nothing was changed."
       zenity --error --text="Could not move the old plugin aside.\n\nNothing was changed."
       exit 1
     fi
   fi
 
-  if ! echo "$password" | sudo -S mv "$new_dir" "$LOCAL_DIR"; then
+  if ! sudo mv "$new_dir" "$LOCAL_DIR"; then
     if [ -d "$old_dir" ]; then
-      echo "$password" | sudo -S mv "$old_dir" "$LOCAL_DIR"
+      sudo mv "$old_dir" "$LOCAL_DIR"
     fi
     echo "ERROR: installing the new plugin failed; the previous version was restored."
     zenity --error --text="Installing the new plugin failed.\n\nThe previous version was restored."
     exit 1
   fi
 
-  echo "$password" | sudo -S rm -rf "$old_dir"
+  sudo rm -rf "$old_dir"
 
   # Decky's file watcher only reloads a plugin on created/modified events for
   # main.py or dist/index.js; the staged directory rename above emits neither,
