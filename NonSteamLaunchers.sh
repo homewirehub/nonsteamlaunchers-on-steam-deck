@@ -6,7 +6,10 @@ flock -n 200 || {
     exit 0
 }
 
-set -x              # activate debugging (execution shown)
+if [[ "${NSL_DEBUG:-0}" == "1" ]]; then
+    set -x          # activate debugging only when requested; otherwise `set -x`
+                    # echoes every expanded value (paths, tokens) into the log
+fi
 set -o pipefail     # capture error from pipes
 
 # ENVIRONMENT VARIABLES
@@ -36,6 +39,94 @@ logged_in_home=$(eval echo "~${logged_in_user}")
 # Setup download directory and log file path
 download_dir="${logged_in_home}/Downloads/NonSteamLaunchersInstallation"
 log_file="${logged_in_home}/Downloads/NonSteamLaunchers-install.log"
+
+# --- Security helpers ---------------------------------------------------------
+# Set NSL_DRY_RUN=1 to preview destructive actions (deletes, Start Fresh) without
+# performing them.
+NSL_DRY_RUN="${NSL_DRY_RUN:-0}"
+
+# Download over HTTPS only, with optional SHA-256 verification. Refuses non-HTTPS
+# URLs and removes the file on checksum mismatch so a tampered/partial download is
+# never executed or installed.
+nsl_download() {
+    local url="$1"
+    local output="$2"
+    local expected_sha256="${3:-}"
+
+    if [[ "$url" != https://* ]]; then
+        echo "Refusing to download non-HTTPS URL: $url"
+        return 1
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --output "$output" "$url" || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        wget --https-only -O "$output" "$url" || return 1
+    else
+        echo "Neither curl nor wget is installed."
+        return 1
+    fi
+
+    if [[ -n "$expected_sha256" ]]; then
+        local actual_sha256
+        actual_sha256=$(sha256sum "$output" | awk '{print $1}')
+        if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+            echo "Checksum mismatch for $output"
+            echo "Expected: $expected_sha256"
+            echo "Actual:   $actual_sha256"
+            rm -f "$output"
+            return 1
+        fi
+    fi
+}
+
+# Find a launcher's exe when its install path includes a version folder
+resolve_launcher_path() {
+    local search_dir="$1"
+    local filename="$2"
+    find "$search_dir" -iname "$filename" 2>/dev/null | head -n1
+}
+
+# Delete only paths inside known NSL locations. Refuses empty/"/"/$HOME and any
+# path outside the allowlist so a bad variable expansion can't wipe unrelated data.
+# Honours NSL_DRY_RUN.
+nsl_safe_rm() {
+    local path="$1"
+
+    if [[ -z "$path" || "$path" == "/" || "$path" == "$logged_in_home" ]]; then
+        echo "Refusing to delete unsafe path: ${path:-<empty>}"
+        return 1
+    fi
+
+    case "$path" in
+        "$download_dir"|"$download_dir"/*|\
+        "${logged_in_home}/.config/systemd/user/NSLGameScanner.py"|\
+        "${logged_in_home}/.config/systemd/user/descriptions.json"|\
+        "${logged_in_home}/.config/systemd/user/nslgamescanner.service"|\
+        "${logged_in_home}/.config/systemd/user/env_vars"|\
+        "${logged_in_home}/.local/share/applications/RemotePlayWhatever"|\
+        "${logged_in_home}/.local/share/applications/RemotePlayWhatever.desktop"|\
+        /tmp/NonSteamLaunchersDecky|/tmp/NonSteamLaunchersDecky.zip|/tmp/NonSteamLaunchersDecky-main|\
+        /tmp/hytale-launcher.flatpak)
+            ;;
+        *)
+            echo "Refusing to delete path outside expected NSL locations: $path"
+            return 1
+            ;;
+    esac
+
+    if [[ "$NSL_DRY_RUN" == "1" ]]; then
+        echo "DRY RUN: would delete $path"
+        return 0
+    fi
+
+    if [[ -L "$path" ]]; then
+        unlink "$path"
+    else
+        rm -rf "$path"
+    fi
+}
+# ------------------------------------------------------------------------------
 
 
 
@@ -253,7 +344,7 @@ get_steam_user_info() {
 {
     set +x
     steamid3=$(get_steam_user_info | tail -n1)
-    set -x
+    [[ "${NSL_DEBUG:-0}" == "1" ]] && set -x
 } 2>/dev/null
 
 # Get Proton compatibility tool name or fall back
@@ -455,16 +546,22 @@ fi
 # Check if the NonSteamLaunchersInstallation subfolder exists in the Downloads folder
 if [ -d "$download_dir" ]; then
     # Delete the NonSteamLaunchersInstallation subfolder
-    rm -rf "$download_dir"
+    nsl_safe_rm "$download_dir"
     echo "Deleted NonSteamLaunchersInstallation subfolder"
 else
     echo "NonSteamLaunchersInstallation subfolder does not exist"
 fi
 
 # Game Launchers
-
-# TODO: parameterize hard-coded client versions (cf. 'app-26.1.9')
 # Set the paths to the launcher executables
+
+# Resolved dynamically (version-numbered install path)
+eaapp_path1=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files/Electronic Arts/EA Desktop/" "EALauncher.exe")
+eaapp_path2=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/TheEAappLauncher/pfx/drive_c/Program Files/Electronic Arts/EA Desktop/" "EALauncher.exe")
+itchio_path1=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/users/steamuser/AppData/Local/itch/" "itch.exe")
+itchio_path2=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/itchioLauncher/pfx/drive_c/users/steamuser/AppData/Local/itch/" "itch.exe")
+
+# Resolved statically (non-version-numbered install path)
 epic_games_launcher_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe"
 epic_games_launcher_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/EpicGamesLauncher/pfx/drive_c/Program Files/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe"
 gog_galaxy_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files (x86)/GOG Galaxy/GalaxyClient.exe"
@@ -473,12 +570,8 @@ uplay_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamL
 uplay_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/UplayLauncher/pfx/drive_c/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/upc.exe"
 battlenet_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe"
 battlenet_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/Battle.netLauncher/pfx/drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe"
-eaapp_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files/Electronic Arts/EA Desktop/13.735.2.6250/EA Desktop/EALauncher.exe"
-eaapp_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/TheEAappLauncher/pfx/drive_c/Program Files/Electronic Arts/EA Desktop/13.735.2.6250/EA Desktop/EALauncher.exe"
 amazongames_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/users/steamuser/AppData/Local/Amazon Games/App/Amazon Games.exe"
 amazongames_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/AmazonGamesLauncher/pfx/drive_c/users/steamuser/AppData/Local/Amazon Games/App/Amazon Games.exe"
-itchio_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/users/steamuser/AppData/Local/itch/app-26.13.0/itch.exe"
-itchio_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/itchioLauncher/pfx/drive_c/users/steamuser/AppData/Local/itch/app-26.13.0/itch.exe"
 legacygames_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files/Legacy Games/Legacy Games Launcher/Legacy Games Launcher.exe"
 legacygames_path2="${logged_in_home}/.local/share/Steam/steamapps/compatdata/LegacyGamesLauncher/pfx/drive_c/Program Files/Legacy Games/Legacy Games Launcher/Legacy Games Launcher.exe"
 humblegames_path1="${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files/Humble App/Humble App.exe"
@@ -1215,10 +1308,15 @@ echo "Options: $options"
 
 # Define the StartFreshFunction
 StartFreshFunction() {
-    # SD card is optional for Start Fresh: without one we simply skip the
-    # SD cleanup step instead of blocking on an error dialog (invisible in
-    # Game Mode) or wiping "/<folder>" paths via an empty sd_path.
-    sd_path=$(get_sd_path) || sd_path=""
+    if [[ "$NSL_DRY_RUN" == "1" ]]; then
+        echo "DRY RUN: Start Fresh will report planned removals without deleting files or changing services."
+        sd_path="${NSL_DRY_RUN_SD_PATH:-/run/media/${USER:-deck}/DRY_RUN_SD_CARD}"
+    else
+        # SD card is optional for Start Fresh: without one we simply skip the
+        # SD cleanup step instead of blocking on an error dialog (invisible in
+        # Game Mode) or wiping "/<folder>" paths via an empty sd_path.
+        sd_path=$(get_sd_path) || sd_path=""
+    fi
 
     compatdata_dir="${logged_in_home}/.local/share/Steam/steamapps/compatdata"
     other_dir="${logged_in_home}/.local/share/Steam/steamapps/shadercache"
@@ -1229,7 +1327,39 @@ StartFreshFunction() {
 
     delete_path() {
         local path="$1"
-        if [ -e "$path" ]; then
+
+        # Never delete empty / root / the home directory itself.
+        if [[ -z "$path" || "$path" == "/" || "$path" == "$logged_in_home" ]]; then
+            echo "Refusing to delete unsafe path: ${path:-<empty>}"
+            return 1
+        fi
+
+        # Only delete paths inside the known NSL locations this function operates on,
+        # so a bad variable expansion can't wipe unrelated data.
+        case "$path" in
+            "$compatdata_dir"/*|"$other_dir"/*|"$sd_path"/*|\
+            "${logged_in_home}/Downloads/NonSteamLaunchersInstallation"|\
+            "${logged_in_home}/.config/systemd/user/Modules"|\
+            "${logged_in_home}/.config/systemd/user/shortcuts"|\
+            "${logged_in_home}/.config/systemd/user/descriptions.json"|\
+            "${logged_in_home}/.config/systemd/user/NSLGameScanner.py"|\
+            "${logged_in_home}/.config/systemd/user/env_vars"|\
+            "${logged_in_home}/.config/systemd/user/nslgamescanner.service"|\
+            "${logged_in_home}/.local/share/applications/RemotePlayWhatever"|\
+            "${logged_in_home}/.local/share/applications/RemotePlayWhatever.desktop"|\
+            "${logged_in_home}/Downloads/NonSteamLaunchers-install.log")
+                ;;
+            *)
+                echo "Refusing to delete path outside expected NSL locations: $path"
+                return 1
+                ;;
+        esac
+
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            if [[ "$NSL_DRY_RUN" == "1" ]]; then
+                echo "DRY RUN: would delete $path"
+                return 0
+            fi
             if [ -L "$path" ]; then
                 target=$(readlink -f "$path")
                 rm -rf "$target"
@@ -1244,6 +1374,11 @@ StartFreshFunction() {
 
     clean_envars_file() {
         local envars_file="${logged_in_home}/.config/systemd/user/env_vars"
+
+        if [[ "$NSL_DRY_RUN" == "1" ]]; then
+            echo "DRY RUN: would clean ENVARS file at $envars_file"
+            return 0
+        fi
 
         if [ -f "$envars_file" ]; then
             echo "Cleaning ENVARS file..."
@@ -1266,6 +1401,11 @@ StartFreshFunction() {
 
     run_nsl_scanner() {
         local scanner_path="${logged_in_home}/.config/systemd/user/NSLGameScanner.py"
+
+        if [[ "$NSL_DRY_RUN" == "1" ]]; then
+            echo "DRY RUN: would run NSLGameScanner.py from $scanner_path"
+            return 0
+        fi
 
         if [ -f "$scanner_path" ]; then
             echo "Running NSLGameScanner.py with cleaned ENVARS..."
@@ -1327,6 +1467,13 @@ StartFreshFunction() {
     delete_path "${logged_in_home}/.config/systemd/user/env_vars"
 
     delete_path "${logged_in_home}/.config/systemd/user/nslgamescanner.service"
+
+    if [[ "$NSL_DRY_RUN" == "1" ]]; then
+        echo "DRY RUN: would unlink nslgamescanner.service symlink and reload/reset systemd user units"
+        show_message "DRY RUN complete — nothing was deleted."
+        exit 0
+    fi
+
     unlink "${logged_in_home}/.config/systemd/user/default.target.wants/nslgamescanner.service" 2>/dev/null || true
 
     systemctl --user daemon-reload
@@ -1356,7 +1503,13 @@ if [[ $options == "Start Fresh" ]] || [[ $selected_launchers == "Start Fresh" ]]
             exit 0
         fi
     else
-        # Command line arguments were provided, so skip displaying the zenity window and directly perform any necessary actions to start fresh by calling the StartFreshFunction
+        # Command line arguments were provided, so skip the zenity window. Require an
+        # explicit opt-in so an accidental/automated "Start Fresh" arg can't silently
+        # wipe everything without confirmation.
+        if [[ "${NSL_CONFIRM_START_FRESH:-0}" != "1" ]]; then
+            echo "Refusing CLI Start Fresh without NSL_CONFIRM_START_FRESH=1"
+            exit 1
+        fi
         StartFreshFunction
     fi
 fi
@@ -2000,7 +2153,7 @@ process_uninstall_options() {
                 sed -i '' "${logged_in_home}/.config/systemd/user/env_vars"
             elif [[ -d "${logged_in_home}/.local/share/Steam/steamapps/compatdata/PlariumLauncher" ]]; then
                 handle_uninstall_plarium "PlariumLauncher"
-                uninstall_launcher "$uninstall_options" "Plarium Play" "$eaapp_path1" "$eaapp_path2" "plarium" "plarium"
+                uninstall_launcher "$uninstall_options" "Plarium Play" "$plarium_path1" "$plarium_path2" "plarium" "plarium"
                 sed -i '' "${logged_in_home}/.config/systemd/user/env_vars"
             fi
         fi
@@ -2051,8 +2204,8 @@ process_uninstall_options() {
         fi
 
         if [[ $uninstall_options == *"Uninstall RemotePlayWhatever"* ]]; then
-            rm -rf "${logged_in_home}/.local/share/applications/RemotePlayWhatever"
-            rm -rf "${logged_in_home}/.local/share/applications/RemotePlayWhatever.desktop"
+            nsl_safe_rm "${logged_in_home}/.local/share/applications/RemotePlayWhatever"
+            nsl_safe_rm "${logged_in_home}/.local/share/applications/RemotePlayWhatever.desktop"
 
             zenity --info --text="RemotePlayWhatever has been uninstalled." --width=200 --height=150 &
             sleep 3
@@ -2188,7 +2341,7 @@ if [ $# -gt 0 ]; then
     # Check the flag after the loop
     if $uninstalled_any_launcher; then
         echo "Uninstallation completed successfully."
-        rm -rf "$download_dir"
+        nsl_safe_rm "$download_dir"
         exit 0
     fi
 else
@@ -2249,7 +2402,7 @@ else
             process_uninstall_options "Uninstall $launcher"
         done
         echo "Uninstallation completed successfully."
-        rm -rf "$download_dir"
+        nsl_safe_rm "$download_dir"
         exit 0
     fi
 fi
@@ -2387,11 +2540,11 @@ function stop_service {
     systemctl --user stop nslgamescanner.service
 
     # Delete the NSLGameScanner.py
-    rm -rf ${logged_in_home}/.config/systemd/user/NSLGameScanner.py
-    rm -rf ${logged_in_home}/.config/systemd/user/descriptions.json
+    nsl_safe_rm "${logged_in_home}/.config/systemd/user/NSLGameScanner.py"
+    nsl_safe_rm "${logged_in_home}/.config/systemd/user/descriptions.json"
 
     # Delete the service file
-    rm -rf ${logged_in_home}/.config/systemd/user/nslgamescanner.service
+    nsl_safe_rm "${logged_in_home}/.config/systemd/user/nslgamescanner.service"
 
     # Remove the symlink
     unlink ${logged_in_home}/.config/systemd/user/default.target.wants/nslgamescanner.service
@@ -2457,7 +2610,7 @@ if [[ " ${args[@]} " =~ " 🔍 " ]] || [[ $options == "🔍" ]]; then
 
     # If command line arguments were provided, exit the script
     if [ ${#args[@]} -ne 0 ]; then
-        rm -rf ${logged_in_home}/.config/systemd/user/env_vars
+        nsl_safe_rm "${logged_in_home}/.config/systemd/user/env_vars"
         exit 0
     fi
 
@@ -2732,7 +2885,7 @@ function install_eaapp {
     mkdir -p "$eaapp_download_dir"
 
     # Download the file
-    wget "$eaapp_url" -O "${eaapp_download_dir}${eaapp_file_name}"
+    nsl_download "$eaapp_url" "${eaapp_download_dir}${eaapp_file_name}" || exit 1
 }
 
 
@@ -3117,7 +3270,7 @@ function install_launcher {
         # Download file
         if [ ! -f "$file_name" ]; then
             echo "Downloading ${file_name}"
-            curl -L "$file_url" -o "$file_name"
+            nsl_download "$file_url" "$file_name" || exit 1
         fi
 
         # Execute the pre-installation command, if provided
@@ -3700,6 +3853,12 @@ check_and_write() {
     fi
 }
 
+
+# Resolved dynamically (version-numbered install path - must run after install_launcher)
+eaapp_path1=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/Program Files/Electronic Arts/EA Desktop/" "EALauncher.exe")
+eaapp_path2=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/TheEAappLauncher/pfx/drive_c/Program Files/Electronic Arts/EA Desktop/" "EALauncher.exe")
+itchio_path1=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/NonSteamLaunchers/pfx/drive_c/users/steamuser/AppData/Local/itch/" "itch.exe")
+itchio_path2=$(resolve_launcher_path "${logged_in_home}/.local/share/Steam/steamapps/compatdata/itchioLauncher/pfx/drive_c/users/steamuser/AppData/Local/itch/" "itch.exe")
 
 check_and_write "epic" "$epic_games_launcher_path1" "$epic_games_launcher_path2" "NonSteamLaunchers" "EpicGamesLauncher" "-opengl" "epic_games_launcher"
 check_and_write "gog" "$gog_galaxy_path1" "$gog_galaxy_path2" "NonSteamLaunchers" "GogGalaxyLauncher" "" "gog_galaxy_launcher"
@@ -4408,7 +4567,7 @@ echo "export chrome_startdir=$chrome_startdir" >> ${logged_in_home}/.config/syst
 # TODO: might be better to relocate temp files to `/tmp` or even use `mktemp -d` since `rm -rf` is potentially dangerous without the `-i` flag
 
 # Delete NonSteamLaunchersInstallation subfolder in Downloads folder
-rm -rf "$download_dir"
+nsl_safe_rm "$download_dir"
 
 
 
