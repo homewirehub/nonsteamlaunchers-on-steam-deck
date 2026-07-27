@@ -299,3 +299,7 @@ dist
 !**/.gitkeep
 !**/*.example
 !**/AGENTS.md
+
+# Editor- und KI-Werkzeug-Konfiguration bleibt lokal
+.claude/
+.vscode/
