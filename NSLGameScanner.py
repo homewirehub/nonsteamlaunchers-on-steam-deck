@@ -5575,50 +5575,64 @@ else:
     conn = sqlite3.connect(itch_db_location)
     cursor = conn.cursor()
 
-    # Fetch data from the 'caves' table
-    cursor.execute("SELECT * FROM caves;")
+    # Columns are selected by name, not by position. butler's schema has
+    # gained a column since this scanner was written: 'verdict' used to sit
+    # at index 11, which now holds 'local_last_run_at' and is NULL. Reading
+    # position 11 handed json.loads() a None and aborted the entire itch.io
+    # scan with "the JSON object must be str, bytes or bytearray, not
+    # NoneType", so no itch.io game was reported at all.
+    cursor.execute("SELECT game_id, verdict FROM caves;")
     caves = cursor.fetchall()
 
-    # Fetch data from the 'games' table
-    cursor.execute("SELECT * FROM games;")
+    cursor.execute("SELECT id, title FROM games;")
     games = cursor.fetchall()
 
-    # Create a dictionary to store game information by game_id
-    games_dict = {game[0]: game for game in games}
+    # Create a dictionary to store game titles by game_id
+    games_dict = {game[0]: game[1] for game in games}
 
     # List to store final Itch.io game details
     itchgames = []
 
     # Match game_id between 'caves' and 'games' tables and collect relevant game details
-    for cave in caves:
-        game_id = cave[1]
-        if game_id in games_dict:
-            game_info = games_dict[game_id]
-            cave_info = json.loads(cave[11])
-            base_path = cave_info['basePath']
-            candidates = cave_info.get('candidates', [])
+    for game_id, verdict in caves:
+        if game_id not in games_dict:
+            continue
+        game_title = games_dict[game_id]
 
-            # Check if candidates exist and are not empty
-            if candidates:
-                executable_path = candidates[0].get('path', None)
+        # One unreadable row must not take the rest of the library with it.
+        if not verdict:
+            print(f"Skipping game (no verdict recorded): {game_title}")
+            continue
+        try:
+            cave_info = json.loads(verdict)
+        except (ValueError, TypeError) as exc:
+            print(f"Skipping game (unreadable verdict): {game_title} ({exc})")
+            continue
 
-                # If there's no valid executable path, skip this entry
-                if not executable_path:
-                    print(f"Skipping game (no executable found): {game_info[2]}")
-                    continue
+        base_path = cave_info.get('basePath')
+        candidates = cave_info.get('candidates', [])
+        if not base_path:
+            print(f"Skipping game (no basePath): {game_title}")
+            continue
 
-                # Skip games with an executable that ends with '.html' (browser games)
-                if executable_path.endswith('.html'):
-                    print(f"Skipping browser game: {game_info[2]}")
-                    continue
+        # Check if candidates exist and are not empty
+        if candidates:
+            executable_path = candidates[0].get('path', None)
 
-                # Extract the game title
-                game_title = game_info[2]
+            # If there's no valid executable path, skip this entry
+            if not executable_path:
+                print(f"Skipping game (no executable found): {game_title}")
+                continue
 
-                # Append the game info (base path, executable path, game title) to the list
-                itchgames.append((base_path, executable_path, game_title))
-            else:
-                print(f"Skipping game (no candidates): {game_info[2]}")
+            # Skip games with an executable that ends with '.html' (browser games)
+            if executable_path.endswith('.html'):
+                print(f"Skipping browser game: {game_title}")
+                continue
+
+            # Append the game info (base path, executable path, game title) to the list
+            itchgames.append((base_path, executable_path, game_title))
+        else:
+            print(f"Skipping game (no candidates): {game_title}")
 
     # Process each game for creating new entries
     for base_path, executable, game_title in itchgames:
